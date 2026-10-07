@@ -4,6 +4,87 @@
 
 사용자 설명상 대회는 사전 준비가 기본적으로 금지되어 있습니다. **이 프로젝트는 사전 학습·연결 연습용입니다. 코드·설정·가이드의 반입 및 제출물 재사용이 허용된다고 가정하지 않습니다.** 현장에서 직접 작성할 최소 흐름은 `FIELD_GUIDE.md`에 정리했습니다.
 
+## 이미지 → 텍스트 기능
+
+기존 `POST /api/vision`에 `task=image_text`를 추가했습니다. 기본 `image_analyze`와 기존 task의 요청·응답은 유지합니다. 프론트 화면 및 요약·일정·장소·지도 기능은 추가하지 않았습니다.
+
+### Windows PowerShell 실행 (Python 3.11 이상)
+
+프로젝트 폴더에서 실행하세요. Python이 다른 경로에 있다면 해당 실행 파일로 venv를 생성해도 됩니다.
+
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+활성화가 실행 정책에 막히면 활성화 없이 `.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt` 및 `.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000`를 실행하세요. 기본 `MOCK_MODE=true`는 키 없이 실행됩니다.
+
+### /docs 업로드 및 팀 API 계약
+
+http://localhost:8000/docs → POST /api/vision → Try it out → file 한 장 선택 → task를 `image_text`로 변경 → Execute. question은 기존 호환성을 위해 유지하지만 image_text에서는 고정 전사 지시를 사용하므로 무시합니다. use_cache=false로 캐시를 끌 수 있습니다. TEAM_API_KEY를 설정했다면 요청에 X-Team-Key 헤더가 필요합니다(기본값은 빈 값).
+
+요청은 multipart/form-data이며 file, question, task, use_cache 필드를 유지합니다. 기존 examples/frontend.js는 수정하지 않았습니다.
+
+```powershell
+curl.exe -X POST http://localhost:8000/api/vision -F "file=@C:/images/sample.png" -F "task=image_text" -F "use_cache=false"
+```
+
+기본 모의 응답 예시:
+
+```json
+{"task":"image_text","output":{"text":"[MOCK] 첫 번째 줄\n두 번째 줄"},"model":"HCX-005","mock":true,"cached":false,"finish_reason":"stop","usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+```
+
+실제 응답은 mock=false이며 output.text에 읽힌 원문을 반환합니다. 원문 언어와 줄바꿈을 보존하도록 지시하고, 글자가 없으면 `output: {"text": ""}`로 정상 반환합니다. JSON의 `\n`은 파싱하면 줄바꿈이 됩니다. 다른 담당자는 `result["output"]["text"]`를 자신의 텍스트 처리 기능에 전달하세요. mock=true는 고정 연결 예시이며 실제 인식 결과가 아닙니다. 이미지 설명이 필요하면 기존 image_analyze의 description, visible_text, suggestions, uncertainties를 사용하세요.
+
+### 이미지 제한과 오류
+
+실제 디코딩 형식으로 PNG/JPEG/WEBP/BMP를 검사합니다. 확장자와 Content-Type이 잘못되어도 실제 지원 이미지이면 허용합니다. 기본 원본 제한은 10MiB(10,485,760바이트), 20,000,000픽셀, 가로·세로 최소 4px입니다. 용량 한도+1바이트까지만 읽고, 픽셀 제한은 전체 디코딩 전에 검사합니다. verify 후 다시 열어 전체 픽셀을 디코딩하여 손상을 검사합니다. 업로드 스풀 파일은 성공·실패 모두 닫으며 별도 이미지 파일은 저장하지 않습니다. Starlette multipart 수신은 임시 스풀을 사용할 수 있으므로 운영 환경에서는 프록시 요청 본문 제한도 설정하세요.
+
+기존처럼 긴 변 1,280px 이하 JPEG로 변환하고 5:1을 넘는 비율에는 흰 여백을 추가합니다. EXIF 방향을 반영하고 원본 메타데이터는 보내지 않습니다. 애니메이션 WEBP는 첫 프레임을 처리합니다. 축소된 작은 글자, 복잡한 문서의 읽기 순서와 전사 정확도는 실제 호출에서 확인해야 합니다.
+
+| 상황 | HTTP 상태 |
+|---|---|
+| 빈 파일, 비이미지, 손상, 미지원 형식, 최소 크기 미달 | 422 |
+| 용량 또는 픽셀 초과 | 413 |
+| 실제 모드 키 미설정 | 503 |
+| 제공자 타임아웃 | 504 |
+| 제공자 인증·호출 제한·연결 실패·잘못된 응답·JSON 오류·출력 잘림 | 502 (기존 계약 유지) |
+| 로컬 호출 횟수·누적 토큰 한도 | 429 |
+
+오류는 `{"detail":"안전한 오류 설명"}`입니다. 공급자 본문이나 키를 반환하지 않으며 실제 실패를 모의 성공으로 숨기거나 자동 재시도하지 않습니다.
+
+### 환경 설정 및 주제 확정 후 변경 위치
+
+| 변수 | 기본값 / 용도 |
+|---|---|
+| MOCK_MODE | true: 고정 모의 응답 / false: 실제 호출 |
+| CLOVA_API_KEY | 빈 값; 실제 실행에 필요한 키 |
+| CLOVA_BASE_URL | https://clovastudio.stream.ntruss.com |
+| CLOVA_VISION_MODEL | HCX-005; 지급받은 이미지 지원 모델 확인 |
+| CLOVA_TIMEOUT_SECONDS | 60 |
+| IMAGE_MAX_BYTES | 10485760; 원본 바이트 한도 |
+| IMAGE_MAX_PIXELS | 20000000; 원본 가로×세로 한도 |
+| DATABASE_PATH / TASKS_PATH | data/hackathon.sqlite3 / tasks.json |
+| CACHE_TTL_SECONDS | 3600; 0이면 캐시 비활성화 |
+| MAX_LIVE_CALLS / TOKEN_STOP_THRESHOLD | 300 / 200000; 기존 호출 예산 |
+| TEAM_API_KEY / CORS_ORIGINS | 기존 팀 인증·CORS 설정 |
+
+실제 실행은 .env의 지급받은 키·주소·모델을 확인하고 MOCK_MODE=false로 변경한 뒤 재시작하세요. 비용 발생 가능성을 확인한 뒤 호출하세요. /health는 설정 여부만 보여주며 실제 연결 성공을 보장하지 않습니다. 실제 .env와 API 키는 Git·로그·응답에 넣지 않습니다.
+
+전사 지시문, 원문 언어 유지(preserve_language=true), 출력 토큰, JSON 스키마와 모의 결과는 `tasks.json → image_text`에서 수정합니다. 라우터는 app/vision.py, 추출 서비스는 app/image_service.py, 응답 모델은 app/image_schemas.py, 검증·전처리는 app/images.py, 제공자 호출은 기존 app/provider.py, 환경 설정은 app/settings.py입니다. 백엔드에서 `await extract_image_text(engine, validated_data_uri)`로 같은 결과를 재사용할 수 있습니다. 응답 필드를 바꾸면 다른 담당자와 계약도 맞추세요.
+
+### 자동 검증
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Python 3.12에서 기존 테스트와 이미지 테스트 총 49개가 통과했습니다. 실제 Uvicorn 서버의 /docs 접근과 multipart 이미지 업로드·모의 JSON 반환도 확인했습니다. tests/test_image_api.py는 지원 이미지, 원문·줄바꿈 반환, 글자 없음(제공자 대역), 모의 표시, 기존 기본 task, /docs 요청 스키마, 잘못된 이미지, 용량·픽셀 제한, HTTP 대역의 인증·호출 제한·타임아웃·연결·잘못된 응답을 검사합니다. 외부 AI 호출 및 실제 추출 정확도는 검증하지 않았습니다. 새 라이브러리나 공통 의존성 변경은 없습니다.
+
 ## 바로 실행
 
 Python 3.11 이상이 필요합니다. 프로젝트 폴더에서 실행하세요.

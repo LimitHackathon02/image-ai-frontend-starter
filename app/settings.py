@@ -20,10 +20,19 @@ class Settings:
     team_key: str = ""
     cors_origins: tuple[str, ...] = ("http://localhost:3000", "http://localhost:5173")
 
+    image_max_bytes: int = 10 * 1024 * 1024
+    image_max_pixels: int = 20_000_000
+
+    def __post_init__(self):
+        if self.image_max_bytes <= 0 or self.image_max_pixels <= 0:
+            raise ValueError("이미지 용량과 픽셀 제한은 양수여야 합니다.")
+
     @classmethod
     def from_env(cls):
         load_dotenv()
         return cls(
+            image_max_bytes=int(os.getenv("IMAGE_MAX_BYTES", "10485760")),
+            image_max_pixels=int(os.getenv("IMAGE_MAX_PIXELS", "20000000")),
             mock=os.getenv("MOCK_MODE", "true").lower() == "true",
             api_key=os.getenv("CLOVA_API_KEY", ""),
             base_url=os.getenv("CLOVA_BASE_URL", cls.base_url).rstrip("/"),

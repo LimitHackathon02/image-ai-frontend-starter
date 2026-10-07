@@ -39,7 +39,7 @@ class ClovaProvider:
             data = response.json()
             code = str(data["status"]["code"])
             if code != "20000":
-                raise HTTPException(502, f"CLOVA 오류 코드 {code}")
+                raise HTTPException(502, "CLOVA 요청을 처리하지 못했습니다. 공급자 설정을 확인하세요.")
             result = data["result"]
             if not isinstance(result["message"]["content"], str):
                 raise ValueError()

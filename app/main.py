@@ -1,17 +1,15 @@
-import base64
 import hmac
-import io
-import warnings
 from typing import Literal
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from PIL import Image, ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 
 from .engine import Engine
 from .settings import Settings
+from .vision import vision_router
+from .images import image_data_uri  # 기존 import 호환
 
 
 class Turn(BaseModel):
@@ -46,28 +44,6 @@ class AskRequest(BaseModel):
     use_cache: bool = True
 
 
-def image_data_uri(raw):
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(raw)) as original:
-                if original.format not in {"PNG", "JPEG", "WEBP", "BMP"}:
-                    raise ValueError("지원 형식 아님")
-                if original.width < 4 or original.height < 4:
-                    raise ValueError("이미지는 가로·세로 4px 이상이어야 합니다.")
-                image = ImageOps.exif_transpose(original).convert("RGB")
-                image.thumbnail((1280, 1280))
-                w, h = image.size
-                # API의 5:1 비율 제한에 맞춰 흰 여백을 추가합니다.
-                size = (max(w, (h+4)//5, 4), max(h, (w+4)//5, 4))
-                image = ImageOps.pad(image, size, color="white") if size != image.size else image
-                out = io.BytesIO()
-                image.save(out, format="JPEG", quality=85)
-                return "data:image/jpeg;base64," + base64.b64encode(out.getvalue()).decode()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError, Image.DecompressionBombWarning):
-        raise HTTPException(422, "유효한 PNG/JPEG/WEBP/BMP 이미지를 사용하세요(최소 4px).") from None
-
-
 def create_app(settings=None):
     settings = settings or Settings.from_env()
     engine = Engine(settings)
@@ -100,13 +76,7 @@ def create_app(settings=None):
     async def run(body: RunRequest):
         return await engine.run(body.task, body.text, body.context, [t.model_dump() for t in body.history], cache=body.use_cache)
 
-    @app.post("/api/vision", **api)
-    async def vision(file: UploadFile = File(...), question: str = Form("사진에서 확인되는 정보와 다음 행동을 정리해줘.", min_length=1, max_length=2000),
-                     task: str = Form("image_analyze", max_length=80), use_cache: bool = Form(True)):
-        raw = await file.read(10 * 1024 * 1024 + 1)
-        if len(raw) > 10 * 1024 * 1024:
-            raise HTTPException(413, "이미지는 10MB 이하로 업로드하세요.")
-        return await engine.run(task, question, image=image_data_uri(raw), cache=use_cache)
+    app.include_router(vision_router(engine), **api)
 
     def add_document(title, text):
         text = text.strip()
