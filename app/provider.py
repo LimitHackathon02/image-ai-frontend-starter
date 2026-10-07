@@ -12,6 +12,12 @@ class ClovaProvider:
     def __init__(self, settings: Settings):
         self.settings = settings
 
+    def validate_image_model(self):
+        # v3 공식 문서에서 HCX-DASH-002는 텍스트 전용입니다.
+        # 대회 전용 모델 이름은 허용하되, 명백한 오설정만 차단합니다.
+        if self.settings.vision_model.strip().upper() == "HCX-DASH-002":
+            raise HTTPException(503, "CLOVA_VISION_MODEL에 이미지 지원 모델을 설정하세요. 일반 CLOVA Studio v3는 HCX-005를 사용합니다.")
+
     async def complete(self, payload: dict, model: str) -> dict:
         if not self.settings.api_key:
             raise HTTPException(503, "CLOVA_API_KEY를 .env에 설정하세요.")

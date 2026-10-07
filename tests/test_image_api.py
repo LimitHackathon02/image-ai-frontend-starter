@@ -114,3 +114,42 @@ def test_pillow_safety_limit(app, client, monkeypatch):
 
 def test_default_byte_limit(client):
     assert upload(client, b"x" * (10485760 + 1)).status_code == 413
+
+
+def test_successful_image_http_transport(app, client, monkeypatch):
+    import base64
+    settings = app.state.engine.settings
+    settings.mock = False
+    settings.api_key = "fake-contract-key-never-sent"
+    original = httpx.AsyncClient
+    calls = []
+    def handle(request):
+        calls.append(request)
+        assert str(request.url) == "https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005"
+        assert request.headers["Authorization"] == "Bearer fake-contract-key-never-sent"
+        assert request.headers["Accept"] == "application/json"
+        payload = json.loads(request.content)
+        uri = payload["messages"][-1]["content"][1]["dataUri"]["data"]
+        with Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))) as image:
+            image.load()
+            assert image.format == "JPEG"
+            assert image.size == (24, 24)
+        return httpx.Response(200, json={"status": {"code": "20000"}, "result": stub_result(json.dumps({"text": "Read text\n읽힌 글자"}))})
+    monkeypatch.setattr("app.provider.httpx.AsyncClient", lambda **kwargs: original(transport=httpx.MockTransport(handle), **kwargs))
+    response = upload(client, use_cache="false")
+    assert response.status_code == 200
+    assert response.json()["mock"] is False
+    assert response.json()["output"]["text"] == "Read text\n읽힌 글자"
+    assert len(calls) == 1
+
+
+def test_text_only_image_model_rejected_without_call(app, client, monkeypatch):
+    settings = app.state.engine.settings
+    settings.mock = False
+    settings.api_key = "fake-key"
+    settings.vision_model = "HCX-DASH-002"
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Text-only model must not be called with an image")
+    monkeypatch.setattr(app.state.engine.provider, "complete", forbidden)
+    assert upload(client).status_code == 503
+    assert client.get("/api/usage").json()["live_call_attempts"] == 0

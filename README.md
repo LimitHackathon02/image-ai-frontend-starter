@@ -77,13 +77,48 @@ curl.exe -X POST http://localhost:8000/api/vision -F "file=@C:/images/sample.png
 
 전사 지시문, 원문 언어 유지(preserve_language=true), 출력 토큰, JSON 스키마와 모의 결과는 `tasks.json → image_text`에서 수정합니다. 라우터는 app/vision.py, 추출 서비스는 app/image_service.py, 응답 모델은 app/image_schemas.py, 검증·전처리는 app/images.py, 제공자 호출은 기존 app/provider.py, 환경 설정은 app/settings.py입니다. 백엔드에서 `await extract_image_text(engine, validated_data_uri)`로 같은 결과를 재사용할 수 있습니다. 응답 필드를 바꾸면 다른 담당자와 계약도 맞추세요.
 
+### 실제 이미지 전사 연결 설정
+
+공식 [v3 텍스트·이미지 문서](https://api.ncloud-docs.com/docs/clovastudio-chatcompletionsv3)에서 HCX-005의 이미지 입력과 `dataUri.data` 형식을 확인했습니다. HCX-DASH-002는 텍스트 전용입니다. 기존 코드가 이미지 데이터를 전송하므로 별도 OCR API 연결 없이 실제 전사를 실행할 수 있습니다. 이는 비전 모델의 전사 기능이며 전용 OCR 수준의 정확도를 보장하지 않습니다.
+
+전송 경로: app/vision.py → app/images.py에서 JPEG·Base64 변환 → app/engine.py에서 사용자 메시지의 `{"type":"image_url","dataUri":{"data":"data:image/jpeg;base64,..."}}` 생성 및 CLOVA_VISION_MODEL 선택 → app/provider.py에서 JSON POST. 일반 설정의 전체 호출 주소는 `https://clovastudio.stream.ntruss.com/v3/chat-completions/HCX-005`입니다.
+
+1. [CLOVA Studio API 키 안내](https://guide.ncloud-docs.com/docs/clovastudio-apikey)에 따라 콘솔의 AI Services → CLOVA Studio → API 키에서 신규 테스트 API 키를 발급하거나, 주최 측에서 지급한 키와 사용 권한을 확인하세요. 테스트 API 키라는 이름만으로 무료라고 판단하지 마세요.
+2. Ncloud의 일반 Access Key/Secret Key, CLOVA OCR Secret, Deprecated의 구형 이중 키는 현재 Bearer 인증 설정과 다릅니다. [API 개요·인증 안내](https://api.ncloud-docs.com/docs/ai-naver-clovastudio-summary)를 참고하세요. 대회 프록시가 별도 형식이면 주최 측 예제와 app/provider.py를 맞춰야 합니다.
+3. `.env`가 없으면 아래 명령으로 만들고 로컬 편집기에서 키를 입력하세요. 키 값을 터미널에 출력하거나 채팅·Git에 붙이지 마세요. 기존 파일은 덮어쓰지 않습니다.
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+notepad .env
+```
+
+실제 실행용 .env 설정 예시(키 값은 비워 두었으므로 로컬에서 발급받은 값을 입력해야 합니다):
+
+```dotenv
+MOCK_MODE=false
+CLOVA_API_KEY=
+CLOVA_BASE_URL=https://clovastudio.stream.ntruss.com
+CLOVA_VISION_MODEL=HCX-005
+CLOVA_TIMEOUT_SECONDS=60
+```
+
+CLOVA_BASE_URL에는 호스트만 넣습니다. 서버가 `/v3/chat-completions/{model}` 경로를 붙이므로 전체 호출 주소를 환경변수에 넣으면 안 됩니다. CLOVA_TEXT_MODEL은 다른 담당자의 텍스트 기능 설정이므로 그대로 두세요. CLOVA_VISION_MODEL=HCX-DASH-002 오설정은 실제 호출 전에 503으로 차단합니다. `.env`보다 이미 설정된 프로세스 환경변수가 우선합니다(python-dotenv 기본 동작). 변경 후 기존 서버를 종료하고 다시 실행하세요.
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+먼저 `/health`에서 mock=false, api_key_configured=true를 확인하세요. 키 값은 표시하지 않습니다. 이후 비용을 확인한 뒤 `/docs`에서 file 한 장, task=image_text, use_cache=false로 실행하세요. 성공 시 mock=false와 output.text를 확인합니다. `use_cache=false`는 실제 제공자 호출을 시도하므로 매번 비용이 발생할 수 있습니다. 실패 시 안전한 오류를 반환하며 모의 응답으로 대체하지 않습니다. 인증 오류는 키 종류와 권한, 403은 모델 권한, 429는 제공자 호출 제한, 504는 시간 초과를 확인하세요(제공자 HTTP 오류는 현재 API에서 502로 표시).
+
+CLOVA Studio 인퍼런스는 모델별 입력·출력 토큰에 따라 과금될 수 있습니다. [공식 요금 안내](https://www.ncloud.com/product/aiService/clovaStudio)와 팀 계정의 크레딧·대회 제공 범위를 확인하세요. 정확한 원화 요금이나 무료 범위는 추측하지 않습니다. 실제 유료 호출은 별도 확인 전에는 실행하지 않았습니다. HTTP 전송 계약 테스트는 MockTransport를 사용하므로 외부 호출·과금이 없습니다.
+
 ### 자동 검증
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Python 3.12에서 기존 테스트와 이미지 테스트 총 49개가 통과했습니다. 실제 Uvicorn 서버의 /docs 접근과 multipart 이미지 업로드·모의 JSON 반환도 확인했습니다. tests/test_image_api.py는 지원 이미지, 원문·줄바꿈 반환, 글자 없음(제공자 대역), 모의 표시, 기존 기본 task, /docs 요청 스키마, 잘못된 이미지, 용량·픽셀 제한, HTTP 대역의 인증·호출 제한·타임아웃·연결·잘못된 응답을 검사합니다. 외부 AI 호출 및 실제 추출 정확도는 검증하지 않았습니다. 새 라이브러리나 공통 의존성 변경은 없습니다.
+Python 3.12에서 기존 테스트와 이미지 테스트 총 51개가 통과했습니다. 실제 Uvicorn 서버의 /docs 접근과 multipart 이미지 업로드·모의 JSON 반환도 확인했습니다. tests/test_image_api.py는 지원 이미지, 원문·줄바꿈 반환, 글자 없음(제공자 대역), 모의 표시, 기존 기본 task, /docs 요청 스키마, 잘못된 이미지, 용량·픽셀 제한, HTTP 대역의 인증·호출 제한·타임아웃·연결·잘못된 응답을 검사합니다. 외부 AI 호출 및 실제 추출 정확도는 검증하지 않았습니다. 새 라이브러리나 공통 의존성 변경은 없습니다.
 
 ## 바로 실행
 

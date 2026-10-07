@@ -79,6 +79,8 @@ class Engine:
             else:
                 if not self.settings.api_key:
                     raise HTTPException(503, "CLOVA_API_KEY를 .env에 설정하세요.")
+                if image:
+                    self.provider.validate_image_model()
                 stats = self.store.usage()
                 if stats["live_call_attempts"] >= self.settings.max_calls:
                     raise HTTPException(429, "실제 API 호출 횟수 한도에 도달했습니다.")
